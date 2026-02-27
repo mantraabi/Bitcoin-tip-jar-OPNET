@@ -2,24 +2,77 @@
 // BTC TIP JAR — OP_NET · Bitcoin Testnet
 // Wallet: @btc-vision/walletconnect V2 (useWalletConnect hook)
 // Data: localStorage (real, persisten, no dummy)
-// Send: walletInstance.sendBitcoin() → real testnet tx
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useEffect, useRef } from "react";
-// V2 API: useWalletConnect (bukan useWallet)
 import { useWalletConnect } from "@btc-vision/walletconnect";
 
 // ─── KONFIGURASI ──────────────────────────────────────────────────────────────
-// Ganti dengan testnet Bitcoin address kamu sebagai penerima tip
-// Buka OP_WALLET → pastikan network = Testnet → copy address (tb1...)
+// Ganti dengan testnet Bitcoin address kamu (tb1...)
+// Buka OP_WALLET → switch ke Testnet → copy address
 const OWNER_ADDRESS = "bcrt1ptnwzw3czz7vy28fgx2530jq3v5qh2up2a4asa8zr046cgsst2fzqph6d4q";
+
+// ─── SEND BITCOIN HELPER ──────────────────────────────────────────────────────
+// Mencoba beberapa cara untuk kirim BTC:
+// 1. walletInstance.sendBitcoin()  ← dari hook @btc-vision/walletconnect
+// 2. window.opnet.sendBitcoin()    ← direct injection fallback
+// 3. window.unisat.sendBitcoin()   ← unisat fallback
+// Juga ada timeout 60 detik agar tidak loading selamanya
+async function sendBitcoinSafe(walletInstance, toAddress, sats) {
+  const timeoutMs = 60_000; // 60 detik timeout
+
+  const withTimeout = (promise) =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Request timed out (60s). Please try again.")), timeoutMs)
+      ),
+    ]);
+
+  // Cara 1: walletInstance dari hook
+  if (walletInstance && typeof walletInstance.sendBitcoin === "function") {
+    console.log("[TipJar] Using walletInstance.sendBitcoin");
+    try {
+      const txid = await withTimeout(walletInstance.sendBitcoin(toAddress, sats));
+      if (txid) return txid;
+    } catch (e) {
+      console.warn("[TipJar] walletInstance.sendBitcoin failed:", e.message);
+      // Coba fallback berikutnya
+    }
+  }
+
+  // Cara 2: window.opnet direct
+  if (window.opnet && typeof window.opnet.sendBitcoin === "function") {
+    console.log("[TipJar] Using window.opnet.sendBitcoin (fallback)");
+    try {
+      const txid = await withTimeout(window.opnet.sendBitcoin(toAddress, sats));
+      if (txid) return txid;
+    } catch (e) {
+      console.warn("[TipJar] window.opnet.sendBitcoin failed:", e.message);
+    }
+  }
+
+  // Cara 3: window.unisat fallback
+  if (window.unisat && typeof window.unisat.sendBitcoin === "function") {
+    console.log("[TipJar] Using window.unisat.sendBitcoin (fallback)");
+    try {
+      const txid = await withTimeout(window.unisat.sendBitcoin(toAddress, sats));
+      if (txid) return txid;
+    } catch (e) {
+      console.warn("[TipJar] window.unisat.sendBitcoin failed:", e.message);
+    }
+  }
+
+  throw new Error(
+    "Could not send transaction. Make sure OP_WALLET is unlocked, set to Testnet, and you have enough tBTC."
+  );
+}
 
 // ─── UTILS ────────────────────────────────────────────────────────────────────
 const shortAddr = (addr) => {
   if (!addr || addr.length < 12) return addr || "???";
   return addr.slice(0, 8) + "..." + addr.slice(-6);
 };
-
 const timeAgo = (ts) => {
   const d = Math.floor((Date.now() - ts) / 1000);
   if (d < 60) return `${d}s ago`;
@@ -27,39 +80,26 @@ const timeAgo = (ts) => {
   if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
   return `${Math.floor(d / 86400)}d ago`;
 };
-
 const satsToBtc = (sats) => (sats / 1e8).toFixed(5);
 const btcToSats = (btc) => Math.round(parseFloat(btc) * 1e8);
 
 // ─── LOCALSTORAGE ─────────────────────────────────────────────────────────────
 const STORAGE_KEY = "btc_tipjar_v1";
-
 const loadTips = () => {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); }
+  catch { return []; }
 };
-
 const persistTip = (tip) => {
-  const prev = loadTips();
-  const next = [tip, ...prev].slice(0, 50);
+  const next = [tip, ...loadTips()].slice(0, 50);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   return next;
 };
-
-const totalSats = (tips) =>
-  tips.reduce((s, t) => s + (t.sats || 0), 0);
+const totalSats = (tips) => tips.reduce((s, t) => s + (t.sats || 0), 0);
 
 // ─── DESIGN ───────────────────────────────────────────────────────────────────
 const C = {
-  pink:   "#ff2d78",
-  cyan:   "#00f5ff",
-  green:  "#39ff14",
-  yellow: "#ffe600",
-  purple: "#b400ff",
-  bg:     "#05000f",
+  pink: "#ff2d78", cyan: "#00f5ff", green: "#39ff14",
+  yellow: "#ffe600", purple: "#b400ff", bg: "#05000f",
 };
 
 const CSS = `
@@ -77,10 +117,10 @@ const CSS = `
     from { transform: translateY(-16px); opacity: 0; }
     to   { transform: translateY(0);     opacity: 1; }
   }
-  @keyframes spin    { to { transform: rotate(360deg); } }
-  @keyframes blink   { 0%,100%{opacity:1} 50%{opacity:.2} }
-  @keyframes flicker { 0%,100%{opacity:1} 93%{opacity:.7} 96%{opacity:.9} }
-  @keyframes glitch  {
+  @keyframes spin     { to { transform: rotate(360deg); } }
+  @keyframes blink    { 0%,100%{opacity:1} 50%{opacity:.2} }
+  @keyframes flicker  { 0%,100%{opacity:1} 93%{opacity:.7} 96%{opacity:.9} }
+  @keyframes glitch   {
     0%,88%,100% { text-shadow:-2px 0 #ff2d78,2px 0 #00f5ff; clip-path:none; }
     89% { clip-path:inset(20% 0 50% 0); text-shadow:3px 0 #ff2d78; }
     90% { clip-path:inset(55% 0 5% 0);  text-shadow:-3px 0 #00f5ff; }
@@ -91,13 +131,17 @@ const CSS = `
     100% { transform:translateY(110vh) rotate(720deg); opacity:0; }
   }
   @keyframes gridScroll {
-    from { background-position: 0 0; }
-    to   { background-position: 40px 40px; }
+    from { background-position:0 0; }
+    to   { background-position:40px 40px; }
   }
   @keyframes newBadge {
     0%  { transform:scale(.5); opacity:0; }
     60% { transform:scale(1.2); }
     100%{ transform:scale(1);  opacity:1; }
+  }
+  @keyframes progressBar {
+    0%   { width: 0%; }
+    100% { width: 100%; }
   }
 
   .tip-card { transition: border-color .3s, background .3s; }
@@ -110,8 +154,7 @@ const CSS = `
     transition: transform .15s, letter-spacing .2s;
   }
   .send-btn:hover {
-    transform: scale(1.06);
-    letter-spacing: 6px;
+    transform: scale(1.06); letter-spacing: 6px;
     animation: none;
     box-shadow: 0 0 50px #ff2d78, 0 0 100px #ff2d7888 !important;
   }
@@ -122,18 +165,16 @@ const CSS = `
 `;
 
 // ─── CONFETTI ─────────────────────────────────────────────────────────────────
-const CONFETTI_CHARS = ["▪","◆","▸","✦","★","⬡","▲","●"];
 const CONFETTI_COLS  = [C.pink, C.cyan, C.green, C.yellow, C.purple];
-
+const CONFETTI_CHARS = ["▪","◆","▸","✦","★","⬡","▲","●"];
 function Confetti({ active }) {
   const pieces = useRef(
     Array.from({ length: 55 }, (_, i) => ({
       id: i, left: Math.random() * 100,
-      delay: Math.random() * 1.2,
-      dur:   1.5 + Math.random() * 1.2,
+      delay: Math.random() * 1.2, dur: 1.5 + Math.random() * 1.2,
       color: CONFETTI_COLS[i % CONFETTI_COLS.length],
-      char:  CONFETTI_CHARS[i % CONFETTI_CHARS.length],
-      size:  i % 4 === 0 ? 18 : 10,
+      char: CONFETTI_CHARS[i % CONFETTI_CHARS.length],
+      size: i % 4 === 0 ? 18 : 10,
     }))
   ).current;
   if (!active) return null;
@@ -155,47 +196,37 @@ function Confetti({ active }) {
 function TipCard({ tip }) {
   const [hi, setHi] = useState(tip.isNew);
   useEffect(() => {
-    if (tip.isNew) {
-      const t = setTimeout(() => setHi(false), 4000);
-      return () => clearTimeout(t);
-    }
+    if (tip.isNew) { const t = setTimeout(() => setHi(false), 4000); return () => clearTimeout(t); }
   }, []);
-
   const hue = ((tip.sender?.charCodeAt(4) || 0) * 17 + (tip.sender?.charCodeAt(5) || 0) * 7) % 360;
-
   return (
     <div className="tip-card" style={{
       background: hi ? "rgba(255,45,120,.07)" : "rgba(0,245,255,.03)",
-      border: `1px solid ${hi ? C.pink : "rgba(0,245,255,.15)"}`,
+      border:`1px solid ${hi ? C.pink : "rgba(0,245,255,.15)"}`,
       borderRadius:"4px", padding:"16px 20px 14px", marginBottom:"10px",
       position:"relative", overflow:"hidden",
       animation: tip.isNew ? "slideDown .35s ease" : "none",
       boxShadow: hi ? `0 0 24px ${C.pink}22` : "none",
       fontFamily:"'Share Tech Mono', monospace",
     }}>
-      {/* Accent bar */}
-      <div style={{
-        position:"absolute", left:0, top:0, bottom:0, width:"3px",
+      <div style={{ position:"absolute", left:0, top:0, bottom:0, width:"3px",
         background: hi ? `linear-gradient(to bottom,${C.pink},${C.purple})` : C.cyan,
         boxShadow:`0 0 8px ${hi ? C.pink : C.cyan}`,
       }}/>
-
       {hi && (
         <span style={{
           position:"absolute", top:"10px", right:"12px",
-          background:C.pink, color:"#000", fontSize:"10px",
-          fontWeight:900, padding:"2px 9px", borderRadius:"2px",
-          letterSpacing:"2px", animation:"newBadge .4s ease",
-          boxShadow:`0 0 10px ${C.pink}`,
+          background:C.pink, color:"#000", fontSize:"10px", fontWeight:900,
+          padding:"2px 9px", borderRadius:"2px", letterSpacing:"2px",
+          animation:"newBadge .4s ease", boxShadow:`0 0 10px ${C.pink}`,
           fontFamily:"'Share Tech Mono', monospace",
         }}>NEW</span>
       )}
-
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"8px" }}>
         <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
           <div style={{
-            width:"26px", height:"26px", borderRadius:"3px",
-            background:`hsl(${hue},80%,55%)`, flexShrink:0,
+            width:"26px", height:"26px", borderRadius:"3px", flexShrink:0,
+            background:`hsl(${hue},80%,55%)`,
             display:"flex", alignItems:"center", justifyContent:"center",
             fontSize:"11px", fontWeight:900, color:"#000",
           }}>{(tip.sender?.[4] || "?").toUpperCase()}</div>
@@ -203,7 +234,6 @@ function TipCard({ tip }) {
         </div>
         <span style={{ color:"rgba(255,255,255,.2)", fontSize:"11px" }}>{timeAgo(tip.ts)}</span>
       </div>
-
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:"12px" }}>
         <p style={{ color:"#ccc", fontSize:"13px", lineHeight:1.5, flex:1 }}>
           <span style={{ color:C.cyan }}>{">"}</span> {tip.message}
@@ -213,11 +243,8 @@ function TipCard({ tip }) {
             ₿{satsToBtc(tip.sats)}
           </div>
           {tip.txid && tip.txid !== "unknown" && (
-            <a
-              href={`https://mempool.space/testnet4/tx/${tip.txid}`}
-              target="_blank" rel="noreferrer"
-              style={{ color:"#444", fontSize:"10px", textDecoration:"none" }}
-            >view tx ↗</a>
+            <a href={`https://mempool.space/testnet4/tx/${tip.txid}`} target="_blank" rel="noreferrer"
+              style={{ color:"#444", fontSize:"10px", textDecoration:"none" }}>view tx ↗</a>
           )}
         </div>
       </div>
@@ -230,9 +257,22 @@ function TipModal({ onClose, onSent, senderAddress, walletInstance }) {
   const [amount,  setAmount]  = useState("");
   const [message, setMessage] = useState("");
   const [errors,  setErrors]  = useState({});
-  const [sending, setSending] = useState(false);
+  const [step,    setStep]    = useState("form"); // "form" | "waiting" | "success"
   const [txid,    setTxid]    = useState(null);
+  const [elapsed, setElapsed] = useState(0);
+  const timerRef = useRef(null);
   const QUICK = ["0.0001","0.0005","0.001","0.005"];
+
+  // Elapsed timer saat waiting — tampilkan berapa detik sudah berlalu
+  useEffect(() => {
+    if (step === "waiting") {
+      setElapsed(0);
+      timerRef.current = setInterval(() => setElapsed(e => e + 1), 1000);
+    } else {
+      clearInterval(timerRef.current);
+    }
+    return () => clearInterval(timerRef.current);
+  }, [step]);
 
   const validate = () => {
     const e = {};
@@ -247,26 +287,21 @@ function TipModal({ onClose, onSent, senderAddress, walletInstance }) {
   const handleSend = async () => {
     const e = validate();
     if (Object.keys(e).length) { setErrors(e); return; }
-    if (!walletInstance) { setErrors({ submit:"Wallet not connected" }); return; }
-
-    setSending(true);
     setErrors({});
+    setStep("waiting");
 
     try {
       const sats = btcToSats(amount);
-
-      // sendBitcoin adalah method dari walletInstance (Unisat-compatible)
-      // walletInstance = raw wallet object dari useWalletConnect()
-      const id = await walletInstance.sendBitcoin(OWNER_ADDRESS, sats);
-
+      // Pakai helper dengan fallback + timeout 60s
+      const id = await sendBitcoinSafe(walletInstance, OWNER_ADDRESS, sats);
       setTxid(id || "unknown");
       onSent({ sats, message, txid: id || "unknown", sender: senderAddress });
+      setStep("success");
     } catch (err) {
-      console.error(err);
-      setErrors({ submit: err?.message || "Transaction failed. Make sure you have testnet BTC." });
+      console.error("[TipJar] Send error:", err);
+      setErrors({ submit: err?.message || "Transaction failed." });
+      setStep("form");
     }
-
-    setSending(false);
   };
 
   const inp = (err) => ({
@@ -280,23 +315,19 @@ function TipModal({ onClose, onSent, senderAddress, walletInstance }) {
   const corners = [[false,false],[false,true],[true,false],[true,true]];
 
   return (
-    <div
-      onClick={e => e.target === e.currentTarget && onClose()}
+    <div onClick={e => e.target === e.currentTarget && step !== "waiting" && onClose()}
       style={{
-        position:"fixed", inset:0,
-        background:"rgba(0,0,15,.88)",
+        position:"fixed", inset:0, background:"rgba(0,0,15,.88)",
         backdropFilter:"blur(12px)",
         display:"flex", alignItems:"center", justifyContent:"center",
         zIndex:1000, padding:"20px",
-      }}
-    >
+      }}>
       <div style={{
-        width:"100%", maxWidth:"460px",
-        background:"#080012",
-        border:`1px solid ${txid ? C.green : C.pink}`,
+        width:"100%", maxWidth:"460px", background:"#080012",
+        border:`1px solid ${step === "success" ? C.green : C.pink}`,
         borderRadius:"6px", padding:"36px 32px",
         animation:"slideDown .3s ease",
-        boxShadow:`0 0 60px ${txid ? C.green : C.pink}33`,
+        boxShadow:`0 0 60px ${step === "success" ? C.green : C.pink}33`,
         fontFamily:"'Share Tech Mono', monospace",
         position:"relative", overflow:"hidden",
       }}>
@@ -307,15 +338,61 @@ function TipModal({ onClose, onSent, senderAddress, walletInstance }) {
             top:!b?0:"auto", bottom:b?0:"auto",
             left:!r?0:"auto", right:r?0:"auto",
             width:"14px", height:"14px",
-            borderTop:  !b ? `2px solid ${C.cyan}` : "none",
-            borderBottom: b ? `2px solid ${C.cyan}` : "none",
-            borderLeft: !r ? `2px solid ${C.cyan}` : "none",
-            borderRight:  r ? `2px solid ${C.cyan}` : "none",
+            borderTop:    !b ? `2px solid ${C.cyan}` : "none",
+            borderBottom:  b ? `2px solid ${C.cyan}` : "none",
+            borderLeft:   !r ? `2px solid ${C.cyan}` : "none",
+            borderRight:   r ? `2px solid ${C.cyan}` : "none",
           }}/>
         ))}
 
-        {txid ? (
-          // ── SUCCESS ──────────────────────────────────────────────────────
+        {/* ── WAITING STATE ─────────────────────────────────────────────── */}
+        {step === "waiting" && (
+          <div style={{ textAlign:"center", padding:"24px 0" }}>
+            {/* Spinner */}
+            <div style={{
+              width:"56px", height:"56px", margin:"0 auto 20px",
+              border:`3px solid rgba(255,45,120,.2)`,
+              borderTopColor:C.pink, borderRadius:"50%",
+              animation:"spin 1s linear infinite",
+              filter:`drop-shadow(0 0 12px ${C.pink})`,
+            }}/>
+
+            <h2 style={{ color:C.pink, fontSize:"18px", letterSpacing:"3px", marginBottom:"8px", filter:`drop-shadow(0 0 8px ${C.pink})` }}>
+              AWAITING SIGNATURE
+            </h2>
+            <p style={{ color:"#555", fontSize:"12px", letterSpacing:"1px", marginBottom:"20px", lineHeight:1.6 }}>
+              Check your OP_WALLET popup and <strong style={{ color:"#888" }}>approve the transaction</strong>.
+            </p>
+
+            {/* Progress bar */}
+            <div style={{ background:"rgba(255,255,255,.05)", borderRadius:"2px", height:"3px", overflow:"hidden", marginBottom:"12px" }}>
+              <div style={{
+                height:"100%",
+                background:`linear-gradient(90deg,${C.pink},${C.purple})`,
+                animation:`progressBar 60s linear forwards`,
+                boxShadow:`0 0 8px ${C.pink}`,
+              }}/>
+            </div>
+
+            {/* Elapsed time */}
+            <p style={{ color:"#333", fontSize:"11px", letterSpacing:"1px" }}>
+              {elapsed}s elapsed · timeout at 60s
+            </p>
+
+            <div style={{
+              marginTop:"20px", background:"rgba(255,230,0,.05)",
+              border:`1px solid ${C.yellow}22`, borderRadius:"4px", padding:"10px 14px",
+            }}>
+              <p style={{ color:"#666", fontSize:"11px", lineHeight:1.6, letterSpacing:"0.5px" }}>
+                💡 If no popup appeared, click the <span style={{ color:C.yellow }}>OP_WALLET</span> icon
+                in your browser toolbar to find the pending request.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── SUCCESS STATE ──────────────────────────────────────────────── */}
+        {step === "success" && (
           <div style={{ textAlign:"center", padding:"16px 0" }}>
             <div style={{ fontSize:"48px", marginBottom:"14px", filter:`drop-shadow(0 0 20px ${C.green})` }}>⚡</div>
             <h2 style={{ color:C.green, fontSize:"20px", letterSpacing:"4px", marginBottom:"10px", filter:`drop-shadow(0 0 8px ${C.green})` }}>
@@ -324,7 +401,7 @@ function TipModal({ onClose, onSent, senderAddress, walletInstance }) {
             <p style={{ color:"#555", fontSize:"12px", marginBottom:"20px", letterSpacing:"1px" }}>
               // Broadcast to Bitcoin testnet via OP_NET
             </p>
-            {txid !== "unknown" && (
+            {txid && txid !== "unknown" && (
               <div style={{ background:`${C.green}08`, border:`1px solid ${C.green}33`, borderRadius:"4px", padding:"10px 14px", marginBottom:"20px" }}>
                 <p style={{ color:C.green, fontSize:"10px", marginBottom:"4px" }}>TXID:</p>
                 <p style={{ color:"#666", fontSize:"11px", wordBreak:"break-all", marginBottom:"6px" }}>{txid}</p>
@@ -333,14 +410,16 @@ function TipModal({ onClose, onSent, senderAddress, walletInstance }) {
               </div>
             )}
             <button onClick={onClose} style={{
-              background:"transparent", border:`1px solid ${C.cyan}`,
-              color:C.cyan, padding:"12px 32px", borderRadius:"4px",
-              fontSize:"13px", cursor:"pointer", letterSpacing:"3px",
+              background:"transparent", border:`1px solid ${C.cyan}`, color:C.cyan,
+              padding:"12px 32px", borderRadius:"4px", fontSize:"13px",
+              cursor:"pointer", letterSpacing:"3px",
               fontFamily:"'Share Tech Mono', monospace",
             }}>[ CLOSE ]</button>
           </div>
-        ) : (
-          // ── FORM ─────────────────────────────────────────────────────────
+        )}
+
+        {/* ── FORM STATE ────────────────────────────────────────────────── */}
+        {step === "form" && (
           <>
             <div style={{ marginBottom:"28px" }}>
               <h2 style={{ fontSize:"20px", letterSpacing:"4px", color:C.pink, filter:`drop-shadow(0 0 10px ${C.pink})` }}>
@@ -392,9 +471,14 @@ function TipModal({ onClose, onSent, senderAddress, walletInstance }) {
               {errors.message && <p style={{ color:C.pink, fontSize:"11px", marginTop:"4px" }}>⚠ {errors.message}</p>}
             </div>
 
+            {/* Submit error */}
             {errors.submit && (
-              <div style={{ background:`${C.pink}0d`, border:`1px solid ${C.pink}44`, borderRadius:"4px", padding:"10px 14px", marginBottom:"16px" }}>
-                <p style={{ color:C.pink, fontSize:"12px", lineHeight:1.5 }}>⚠ {errors.submit}</p>
+              <div style={{ background:`${C.pink}0d`, border:`1px solid ${C.pink}44`, borderRadius:"4px", padding:"12px 14px", marginBottom:"16px" }}>
+                <p style={{ color:C.pink, fontSize:"12px", lineHeight:1.6 }}>⚠ {errors.submit}</p>
+                {/* Hint jika error */}
+                <p style={{ color:"#444", fontSize:"11px", marginTop:"6px", lineHeight:1.6 }}>
+                  💡 Try: Open OP_WALLET → check network is <span style={{ color:C.yellow }}>Testnet</span> → make sure balance &gt; 0
+                </p>
               </div>
             )}
 
@@ -405,26 +489,19 @@ function TipModal({ onClose, onSent, senderAddress, walletInstance }) {
                 cursor:"pointer", letterSpacing:"2px",
                 fontFamily:"'Share Tech Mono', monospace",
               }}>[ CANCEL ]</button>
-
-              <button onClick={handleSend} disabled={sending} style={{
+              <button onClick={handleSend} style={{
                 flex:2,
-                background: sending ? `${C.pink}1a` : `linear-gradient(135deg,${C.pink}dd,${C.purple}dd)`,
+                background:`linear-gradient(135deg,${C.pink}dd,${C.purple}dd)`,
                 border:`1px solid ${C.pink}`, color:"#fff", borderRadius:"4px",
                 padding:"13px", fontSize:"14px", fontWeight:700,
-                cursor: sending ? "not-allowed" : "pointer",
-                letterSpacing:"3px", fontFamily:"'Share Tech Mono', monospace",
+                cursor:"pointer", letterSpacing:"3px",
+                fontFamily:"'Share Tech Mono', monospace",
                 display:"flex", alignItems:"center", justifyContent:"center", gap:"8px",
-                boxShadow: sending ? "none" : `0 0 20px ${C.pink}55`,
+                boxShadow:`0 0 20px ${C.pink}55`,
               }}>
-                {sending ? (
-                  <>
-                    <div style={{ width:"14px", height:"14px", border:"2px solid #ffffff33", borderTopColor:"#fff", borderRadius:"50%", animation:"spin .7s linear infinite" }}/>
-                    SENDING...
-                  </>
-                ) : "⚡ SEND BTC"}
+                ⚡ SEND BTC
               </button>
             </div>
-
             <p style={{ color:"#1a1a1a", fontSize:"10px", textAlign:"center", marginTop:"14px", letterSpacing:"1px" }}>
               // Sends real tBTC → {shortAddr(OWNER_ADDRESS)}
             </p>
@@ -447,12 +524,12 @@ function InstallBanner() {
         ⚠ OP_WALLET NOT DETECTED
       </p>
       <p style={{ color:"#555", fontSize:"12px", lineHeight:1.6 }}>
-        You need OP_WALLET Chrome extension to connect & send tips.
+        Install OP_WALLET Chrome extension to connect and send tips.
       </p>
       <a href="https://chromewebstore.google.com/detail/opwallet/pmbjpcmaaladnfpacpmhmnfmpklgbdjb"
         target="_blank" rel="noreferrer"
         style={{ color:C.cyan, fontSize:"12px", display:"inline-block", marginTop:"8px" }}>
-        → Install OP_WALLET from Chrome Store ↗
+        → Install OP_WALLET ↗
       </a>
     </div>
   );
@@ -460,40 +537,32 @@ function InstallBanner() {
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
-  // ── V2 hook: useWalletConnect (bukan useWallet) ──────────────────────────
   const {
-    walletAddress,    // string | null  — address yang terkoneksi
-    walletInstance,   // object | null  — raw wallet, punya .sendBitcoin()
-    connecting,       // boolean
-    openConnectModal, // () => void — buka modal pilih wallet bawaan library
-    disconnect,       // () => void
-    network,          // { network: 'testnet'|'mainnet'|... } | null
-    walletBalance,    // { total, confirmed, ... } | null
-    allWallets,       // WalletInformation[] — daftar wallet + isInstalled
+    walletAddress,
+    walletInstance,
+    connecting,
+    openConnectModal,
+    disconnect,
+    walletBalance,
+    allWallets,
   } = useWalletConnect();
 
-  const [tips,          setTips]          = useState(() => loadTips());
-  const [showModal,     setShowModal]     = useState(false);
-  const [showThanks,    setShowThanks]    = useState(false);
-  const [showConfetti,  setShowConfetti]  = useState(false);
-  const [blockHeight,   setBlockHeight]   = useState("...");
-  const [walletErr,     setWalletErr]     = useState(null);
+  const [tips,         setTips]         = useState(() => loadTips());
+  const [showModal,    setShowModal]    = useState(false);
+  const [showThanks,   setShowThanks]   = useState(false);
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [blockHeight,  setBlockHeight]  = useState("...");
   const idRef = useRef(Date.now());
 
-  // Cek apakah ada wallet yang ter-install
-  const opWalletInstalled = allWallets?.some(
-    w => w.name === "OP_WALLET" && w.isInstalled
-  ) ?? false;
+  const opWalletInstalled = allWallets?.some(w => w.name === "OP_WALLET" && w.isInstalled) ?? false;
 
-  // Fetch block height testnet
+  // Fetch block height
   useEffect(() => {
-    const fetch_bh = () =>
+    const f = () =>
       fetch("https://mempool.space/testnet4/api/blocks/tip/height")
-        .then(r => r.text())
-        .then(h => setBlockHeight(parseInt(h).toLocaleString()))
-        .catch(() => {});
-    fetch_bh();
-    const iv = setInterval(fetch_bh, 30000);
+        .then(r => r.text()).then(h => setBlockHeight(parseInt(h).toLocaleString())).catch(() => {});
+    f();
+    const iv = setInterval(f, 30000);
     return () => clearInterval(iv);
   }, []);
 
@@ -507,8 +576,7 @@ export default function App() {
       id: ++idRef.current,
       sender: sender || walletAddress || "unknown",
       sats, message, txid,
-      ts: Date.now(),
-      isNew: true,
+      ts: Date.now(), isNew: true,
     };
     setTips(persistTip(tip));
     setShowThanks(true);
@@ -535,8 +603,7 @@ export default function App() {
           linear-gradient(rgba(0,245,255,.04) 1px, transparent 1px),
           linear-gradient(90deg, rgba(0,245,255,.04) 1px, transparent 1px)
         `,
-        backgroundSize:"40px 40px",
-        animation:"gridScroll 10s linear infinite",
+        backgroundSize:"40px 40px", animation:"gridScroll 10s linear infinite",
       }}/>
 
       {/* Scanlines */}
@@ -549,7 +616,7 @@ export default function App() {
       <div style={{ position:"fixed", top:"-100px", left:"-100px", width:"500px", height:"500px", borderRadius:"50%", background:`radial-gradient(circle,${C.purple}16,transparent 70%)`, pointerEvents:"none", zIndex:0 }}/>
       <div style={{ position:"fixed", bottom:"-100px", right:"-100px", width:"600px", height:"600px", borderRadius:"50%", background:`radial-gradient(circle,${C.pink}10,transparent 70%)`, pointerEvents:"none", zIndex:0 }}/>
 
-      {/* ── STATUS BAR ── */}
+      {/* STATUS BAR */}
       <div style={{
         position:"relative", zIndex:10, width:"100%",
         borderBottom:"1px solid rgba(0,245,255,.1)",
@@ -560,19 +627,13 @@ export default function App() {
         <div style={{ display:"flex", gap:"20px", alignItems:"center", flexWrap:"wrap" }}>
           <span style={{ color:C.cyan, filter:`drop-shadow(0 0 6px ${C.cyan})` }}>OP_NET</span>
           <span style={{ color:"#1e1e1e" }}>|</span>
-          <span style={{ color:"#444" }}>
-            BLK <span style={{ color:C.yellow }}>{blockHeight}</span>
-          </span>
+          <span style={{ color:"#444" }}>BLK <span style={{ color:C.yellow }}>{blockHeight}</span></span>
           <span style={{ color:"#1e1e1e" }}>|</span>
-          <span style={{ color:"#444" }}>
-            NET <span style={{ color:C.green, filter:`drop-shadow(0 0 4px ${C.green})` }}>TESTNET</span>
-          </span>
+          <span style={{ color:"#444" }}>NET <span style={{ color:C.green, filter:`drop-shadow(0 0 4px ${C.green})` }}>TESTNET</span></span>
           {walletAddress && walletBalance && (
             <>
               <span style={{ color:"#1e1e1e" }}>|</span>
-              <span style={{ color:"#444" }}>
-                BAL <span style={{ color:C.yellow }}>{satsToBtc(walletBalance.confirmed)} tBTC</span>
-              </span>
+              <span style={{ color:"#444" }}>BAL <span style={{ color:C.yellow }}>{satsToBtc(walletBalance.confirmed)} tBTC</span></span>
             </>
           )}
         </div>
@@ -590,7 +651,7 @@ export default function App() {
         )}
       </div>
 
-      {/* ── MAIN ── */}
+      {/* MAIN */}
       <div style={{ position:"relative", zIndex:10, maxWidth:"700px", margin:"0 auto", padding:"48px 20px 80px" }}>
 
         {/* HERO */}
@@ -598,8 +659,7 @@ export default function App() {
           <div style={{ fontSize:"60px", marginBottom:"10px", filter:`drop-shadow(0 0 24px ${C.yellow})`, animation:"flicker 10s infinite" }}>₿</div>
           <h1 style={{ fontFamily:"'Rajdhani', sans-serif", fontWeight:700, fontSize:"clamp(36px,7vw,60px)", letterSpacing:"8px", marginBottom:"8px", animation:"flicker 8s infinite" }}>
             <span style={{ color:C.pink, animation:"glitch 5s infinite", display:"inline-block" }}>BTC</span>
-            {" "}
-            <span style={{ color:"#fff" }}>TIP JAR</span>
+            {" "}<span style={{ color:"#fff" }}>TIP JAR</span>
           </h1>
           <p style={{ color:"#333", fontSize:"12px", letterSpacing:"4px" }}>
             // POWERED BY <span style={{ color:C.cyan, filter:`drop-shadow(0 0 6px ${C.cyan})` }}>OP_NET</span> · BITCOIN TESTNET
@@ -629,7 +689,6 @@ export default function App() {
         <div style={{ textAlign:"center", marginBottom:"48px" }}>
           {!walletAddress ? (
             <>
-              {/* Tombol connect — buka modal wallet bawaan @btc-vision/walletconnect */}
               <button className="hover-cyan" onClick={openConnectModal} disabled={connecting}
                 style={{
                   background:"transparent", border:`1px solid ${C.cyan}`,
@@ -679,7 +738,6 @@ export default function App() {
           )}
         </div>
 
-        {/* WALLET NOT INSTALLED */}
         {!opWalletInstalled && !walletAddress && <InstallBanner />}
 
         {/* THANK YOU */}
@@ -720,9 +778,7 @@ export default function App() {
               <div style={{ fontSize:"32px", marginBottom:"16px", filter:"grayscale(1)" }}>🪙</div>
               // NO TIPS YET — BE THE FIRST ⚡
             </div>
-          ) : (
-            tips.map(tip => <TipCard key={tip.id} tip={tip} />)
-          )}
+          ) : tips.map(tip => <TipCard key={tip.id} tip={tip} />)}
         </div>
 
         <div style={{ textAlign:"center", marginTop:"48px", paddingTop:"24px", borderTop:"1px solid rgba(0,245,255,.07)" }}>
@@ -732,7 +788,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* MODAL */}
       {showModal && (
         <TipModal
           onClose={() => setShowModal(false)}
